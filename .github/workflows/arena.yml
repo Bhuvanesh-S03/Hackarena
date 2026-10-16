@@ -1,0 +1,78 @@
+name: arena
+on:
+  push:
+    branches: [main]
+    paths: ["teams/**", "terraform/**"]
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [deploy, destroy]
+        default: deploy
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  TF_VAR_domain_name: ${{ secrets.ARENA_DOMAIN }}
+  TF_VAR_zone_id: ${{ secrets.ZONE_ID }}
+  TF_VAR_image_tag: ${{ github.sha }}
+
+jobs:
+  arena:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Collect teams
+        run: echo "TF_VAR_team_names=$(ls teams | jq -R . | jq -sc .)" >> $GITHUB_ENV
+
+      - name: Build, scan, push (skipped on destroy)
+        if: github.event.inputs.action != 'destroy'
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+          aws ecr get-login-password | docker login --username AWS --password-stdin $REGISTRY
+          for t in $(ls teams); do
+            IMG=$REGISTRY/arena:$t-${{ github.sha }}
+            docker build -t $IMG teams/$t
+            # report-only for now; set --exit-code 1 to block CRITICAL findings
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy image --severity CRITICAL --exit-code 0 $IMG
+            docker push $IMG
+          done
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=arena.tfstate" \
+            -backend-config="region=$AWS_REGION"
+
+      - name: Terraform apply
+        if: github.event.inputs.action != 'destroy'
+        working-directory: terraform
+        run: terraform apply -auto-approve -input=false
+
+      - name: Health check
+        if: github.event.inputs.action != 'destroy'
+        working-directory: terraform
+        run: |
+          ALB=$(terraform output -raw alb_dns)
+          DOMAIN="${{ secrets.ARENA_DOMAIN }}"; DOMAIN=${DOMAIN:-local}
+          for t in $(ls ../teams); do
+            ok=0
+            for i in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $t.$DOMAIN" http://$ALB/ || true)
+              [ "$code" = "200" ] && ok=1 && break
+              sleep 10
+            done
+            [ $ok = 1 ] && echo "✅ $t healthy -> http://$t.$DOMAIN" || { echo "❌ $t failed"; exit 1; }
+          done
+
+      - name: Terraform destroy
+        if: github.event.inputs.action == 'destroy'
+        working-directory: terraform
+        run: terraform destroy -auto-approve -input=false
