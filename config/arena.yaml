@@ -1,0 +1,19 @@
+arena_name: demo-day
+event_name: "Hackathon Demo Day"
+aws_region: ap-south-1
+
+submission_deadline: "2026-11-01T12:00:00Z"
+event_ends_at: "2026-11-01T18:00:00Z"
+teardown_grace_hours: 1
+
+sandbox:
+  cpu: 512
+  memory: 1024
+
+slot:
+  planned_minutes: 8
+  hard_cap_minutes: 20
+  warm_max_minutes: 60
+  prewarm_ahead: 1
+
+allowed_ingress_cidrs: ["0.0.0.0/0"]

@@ -1,0 +1,11 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl.bak
+*.auto.tfvars.json
+terraform.tfvars
+.build/
+.out/
+__pycache__/
+urls.json
+artifacts/
